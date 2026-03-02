@@ -52,6 +52,7 @@ def tl_add_1d(A, B, BLOCK_N: int):
 
     with T.Kernel(N // BLOCK_N, threads=256) as bx:
         base_idx = bx * BLOCK_N
+        # No surgar format of vectorized A+B
         for i in T.Parallel(BLOCK_N):
             C[base_idx + i] = A[base_idx + i] + B[base_idx + i]
 
@@ -106,6 +107,11 @@ def tl_mul_relu_1d(A, B, BLOCK_N: int):
     C = T.empty((N,), T.float16)
 
     # TODO: Implement this function
+    with T.Kernel(N // BLOCK_N, threads=256) as bx:
+        base_idx = bx * BLOCK_N
+        # No surgar format of vectorized A+B
+        for i in T.Parallel(BLOCK_N):
+            C[base_idx + i] = T.if_then_else(A[base_idx +i] * B[base_idx +i ] >= 0,   A[base_idx + i] * B[base_idx + i], 0)
 
     return C
 
@@ -167,8 +173,24 @@ def tl_mul_relu_1d_mem(A, B, BLOCK_N: int):
     A: T.Tensor((N,), dtype)
     B: T.Tensor((N,), dtype)
     C = T.empty((N,), dtype)
+    BLOCK_C = 128
 
     # TODO: Implement this function
+    with T.Kernel(N // BLOCK_N, threads = 1024) as bx:
+        base_idx = bx * BLOCK_N
+        A_local = T.alloc_fragment(BLOCK_C, dtype)
+        B_local = T.alloc_fragment(BLOCK_C, dtype)
+        C_local = T.alloc_fragment(BLOCK_C, dtype)
+        # compute A*B, overlap copy(A), copy(B) with A*B
+        for cx in T.Pipelined(BLOCK_N // BLOCK_C, num_stages=1):
+            c_idx = cx * BLOCK_C + base_idx
+            T.copy(A[c_idx], A_local)
+            T.copy(B[c_idx], B_local)
+            for k in T.Parallel(BLOCK_C):
+                C_local[k ] = A_local[k ] * B_local[k ]
+            for k in T.Parallel(BLOCK_C):
+                C_local[k] = T.if_then_else(C_local[k]> T.float16(0), C_local[k], T.float16(0))
+            T.copy(C_local, C[c_idx])
 
     return C
 
