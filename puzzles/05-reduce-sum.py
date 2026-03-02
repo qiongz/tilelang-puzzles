@@ -30,7 +30,7 @@ in the fragment buffers instead of global memory.
 
 Inputs:
     A: Tensor([N, M], float32)  # input tensor
-    B: Tensor([M,], float32)  # input tensor
+    B: Tensor([N,], float32)  # input tensor
     N: int   # size of the tensor. 1 <= N <= 4096
     M: int   # size of the tensor. 1 <= M <= 16384
 
@@ -63,7 +63,18 @@ def tl_reduce_sum(A, BLOCK_N: int, BLOCK_M: int):
     A: T.Tensor((N, M), dtype)
     B = T.empty((N,), dtype)
 
-    # TODO: Implement this function
+    grid_x = T.ceildiv(N, BLOCK_N)
+    num_by = T.ceildiv(M, BLOCK_M)
+
+    with T.Kernel(grid_x, threads = 256) as bx:
+        A_tile = T.alloc_fragment((BLOCK_N, BLOCK_M), dtype)
+        tmp_sum = T.alloc_fragment(BLOCK_N, dtype)
+        T.clear(tmp_sum)
+        for by in T.Pipelined(num_by, num_stages=4):
+            T.copy(A[bx * BLOCK_N, by * BLOCK_M], A_tile)
+            T.reduce_sum(A_tile, tmp_sum, dim=-1, clear=False)
+        T.copy(tmp_sum, B[bx * BLOCK_N])
+
 
     return B
 
