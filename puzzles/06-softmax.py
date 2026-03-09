@@ -77,6 +77,7 @@ def ref_softmax(A: torch.Tensor):
     },
 )
 def tl_softmax(A, BLOCK_N: int, BLOCK_M: int):
+    """ Two-Pass Softmax algorithm """
     log2_e = 1.44269504
     N, M = T.const("N, M")
     dtype = T.float32
@@ -84,6 +85,55 @@ def tl_softmax(A, BLOCK_N: int, BLOCK_M: int):
     B = T.empty((N, M), dtype)
 
     # TODO: Implement this function
+    grid_x = T.ceildiv(N , BLOCK_N)
+    grid_y = T.ceildiv(M , BLOCK_M)
+
+    with T.Kernel(grid_x, threads = 256) as bx:
+        A_local = T.alloc_fragment((BLOCK_N, BLOCK_M),dtype)
+        out_local = T.alloc_fragment((BLOCK_N, BLOCK_N), dtype)
+
+        max_tmp = T.alloc_fragment(BLOCK_N, dtype)
+        sum_tmp = T.alloc_fragment(BLOCK_N, dtype)
+
+        # reduce max/sum rowwise
+        max_local = T.alloc_fragment(BLOCK_N, dtype)
+        sum_local = T.alloc_fragment(BLOCK_N, dtype)
+        T.fill(max_local, -1e30)
+        T.clear(sum_local)
+
+
+        for by in T.serial(grid_y):
+            T.copy(A[bx * BLOCK_N, by * BLOCK_M], A_local)
+            # max_tmp: block-rowwise reduced max
+            T.reduce_max(A_local, max_tmp, dim=1, clear=True)
+
+            # block-rowwise-max
+            # max_tmp: new-maximum within this block
+            for i in T.Parallel(BLOCK_N):
+                max_tmp[i] = T.max(max_local[i], max_tmp[i])
+
+            # exp(x_i - m_i)
+            for i, j in T.Parallel(BLOCK_N, BLOCK_M):
+                out_local[i, j] = T.exp2(log2_e * (A_local[i, j] - max_local[i]))
+
+            # block-rowwise-sum
+            T.reduce_sum(out_local, sum_tmp, dim=1, clear=True)
+
+            # max_local:  m_i <- max(m_{i-1}, x_i)
+            # sum_local:  sum_i <- sum_{i-1} * exp(m_{i-1} - m_i) + exp(x_i - m_i)
+            for i in T.Parallel(BLOCK_N):
+                m_new = max_tmp[i]
+                m_old = max_local[i]
+                alpha = T.exp2(log2_e * (m_old - m_new))
+                sum_local[i] = sum_local[i] * alpha + sum_tmp[i]
+                max_local[i] = m_new
+
+        for by in T.serial(grid_y):
+            T.copy(A[bx * BLOCK_N, by * BLOCK_M], A_local)
+            for i, j in T.Parallel(BLOCK_N, BLOCK_M):
+                out_local[i, j] = T.exp2(log2_e * (A_local[i, j] - max_local[i])) / sum_local[i]
+
+            T.copy(out_local, B[bx * BLOCK_N, by * BLOCK_M])
 
     return B
 
